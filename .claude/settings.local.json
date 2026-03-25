@@ -1,0 +1,62 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python*)",
+      "Bash(python3*)",
+      "Bash(uvx ruff*)",
+      "Bash(pytest*)",
+      "Bash(pip*)",
+      "Bash(pip install:*)",
+      "Bash(pytest:*)",
+      "Bash(python -m task_manager add \"Learn CLAUDE.md\" --priority high)",
+      "Bash(python -m task_manager add \"Try slash commands\" --priority medium)",
+      "Bash(python -m task_manager add \"Test MCP server\" --priority low)",
+      "Bash(python -m task_manager complete 1)",
+      "Bash(python -m task_manager stats)",
+      "Bash(python -m task_manager list)",
+      "Bash(gh auth:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": {
+          "tool_name": "Write"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx ruff check --fix src/ 2>/dev/null; exit 0",
+            "statusMessage": "Auto-linting with ruff..."
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "tool_name": "Edit"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx ruff check --fix src/ 2>/dev/null; exit 0",
+            "statusMessage": "Auto-linting with ruff..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '\\n=== Run: python -m task_manager list ===\\n'",
+            "statusMessage": ""
+          }
+        ]
+      }
+    ]
+  }
+}
