@@ -1,6 +1,0 @@
-Metadata-Version: 2.4
-Name: task-manager
-Version: 0.1.0
-Summary: Smart Task Manager CLI — Claude Code demo project
-Requires-Python: >=3.11
-Requires-Dist: rich>=13.0.0
