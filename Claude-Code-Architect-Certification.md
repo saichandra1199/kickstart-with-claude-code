@@ -1,4 +1,4 @@
-# Claude Code Foundations (CCF) — Complete Certification Study Guide
+# Claude Code Architect Foundations (CCA-F) — Complete Certification Study Guide
 
 > **Status of the exam:** As of March 2026, Anthropic has not yet published a formal CCF exam. What *does* exist is the **"Claude Code in Action"** course on [Anthropic Academy](https://anthropic.skilljar.com) that awards a completion certificate. This guide covers every testable concept drawn directly from the official Claude Code documentation so that you can score 100% on any assessment — current or future.
 >
