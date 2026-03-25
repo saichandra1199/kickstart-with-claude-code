@@ -11,6 +11,7 @@
 
 ## Table of Contents
 
+**Part 1 — Claude Code CLI**
 1. [What is Claude Code?](#1-what-is-claude-code)
 2. [Installation & Surfaces](#2-installation--surfaces)
 3. [CLI Reference](#3-cli-reference)
@@ -31,6 +32,19 @@
 18. [Quick-Reference Cheat Sheet](#18-quick-reference-cheat-sheet)
 19. [Common Exam Traps & Gotchas](#19-common-exam-traps--gotchas)
 20. [Practice Questions](#20-practice-questions)
+
+**Part 2 — Architect: API & System Design**
+21. [Models Overview](#21-models-overview)
+22. [Messages API Reference](#22-messages-api-reference)
+23. [Tool Use](#23-tool-use)
+24. [Extended Thinking](#24-extended-thinking)
+25. [Prompt Engineering](#25-prompt-engineering)
+26. [Computer Use](#26-computer-use)
+27. [Agentic System Design](#27-agentic-system-design)
+28. [Rate Limits](#28-rate-limits)
+29. [AI Safety & Constitutional AI](#29-ai-safety--constitutional-ai)
+30. [Architect Exam: Additional Gotchas](#30-architect-exam-additional-gotchas)
+31. [Practice Questions — Architect Level](#31-practice-questions--architect-level)
 
 ---
 
@@ -1262,3 +1276,771 @@ Return exit code `0` with JSON including:
 ---
 
 *Study tip: The highest-value topics for any Claude Code assessment are **Hooks** (event lifecycle, blocking behavior, exit codes), **Settings** (scope precedence, file locations), **MCP** (scopes, transport types, `.mcp.json` syntax), and **Subagents** (frontmatter fields, nesting limits, permission inheritance). Focus extra time on the [Gotchas section](#19-common-exam-traps--gotchas).*
+
+---
+
+# Part 2 — Claude Certified Architect: API & System Design
+
+> This section covers the topics most likely tested in an **architect-level** certification: the Anthropic API, model selection, prompt engineering, tool use, extended thinking, agentic system design, rate limits, and AI safety.
+
+---
+
+## 21. Models Overview
+
+### Current Models (as of March 2026)
+
+| Model | API ID | Context Window | Max Output | Best For |
+|---|---|---|---|---|
+| **Claude Opus 4.6** | `claude-opus-4-6` | 1M tokens | 128k tokens | Complex reasoning, long-horizon agents |
+| **Claude Sonnet 4.6** | `claude-sonnet-4-6` | 1M tokens | 64k tokens | Production workloads, balanced speed/intelligence |
+| **Claude Haiku 4.5** | `claude-haiku-4-5-20251001` | 200k tokens | 64k tokens | High-volume, low-latency, cost-sensitive |
+
+### Pricing (per million tokens)
+
+| Model | Input | Output |
+|---|---|---|
+| Opus 4.6 | $5 | $25 |
+| Sonnet 4.6 | $3 | $15 |
+| Haiku 4.5 | $1 | $5 |
+
+### Capability Flags
+
+| Feature | Opus 4.6 | Sonnet 4.6 | Haiku 4.5 |
+|---|---|---|---|
+| Extended thinking (adaptive) | Yes | Yes | No |
+| Extended thinking (manual) | Deprecated | Yes | Yes |
+| Interleaved thinking | Yes (auto) | Yes (beta header) | No |
+| 1M token context (native) | Yes | Yes | No |
+| Computer use | Yes | Yes | Yes |
+
+### 1M Context on Older Models
+
+Sonnet 4.5 and Sonnet 4 can use 1M context with:
+- Beta header: `context-1m-2025-08-07`
+- Requires Tier 4 org
+
+All other older models are hard-capped at 200k tokens.
+
+### Deprecated Models
+
+| Model | Retirement date |
+|---|---|
+| Claude Haiku 3 (`claude-3-haiku-20240307`) | **April 19, 2026** |
+
+Use the Models API (`GET /v1/models`) to query available models and their `max_input_tokens`, `max_tokens`, and `capabilities` programmatically.
+
+---
+
+## 22. Messages API Reference
+
+### Endpoint
+
+```
+POST https://api.anthropic.com/v1/messages
+```
+
+### Required Headers
+
+```
+x-api-key: $ANTHROPIC_API_KEY
+anthropic-version: 2023-06-01
+content-type: application/json
+```
+
+### Required Parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `model` | string | Model ID (e.g., `claude-sonnet-4-6`) |
+| `max_tokens` | integer | Max tokens to generate. **No default — always required.** |
+| `messages` | array | `[{"role": "user"|"assistant", "content": "..."}]` |
+
+### Key Optional Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `system` | string or array | — | System prompt |
+| `temperature` | float | 1.0 | Randomness: 0.0 (deterministic) → 1.0 (creative) |
+| `top_p` | float | — | Nucleus sampling |
+| `stop_sequences` | array | — | Custom stop strings |
+| `stream` | boolean | false | Enable SSE streaming |
+| `tools` | array | — | Tool definitions |
+| `tool_choice` | object | `{"type": "auto"}` | Tool invocation strategy |
+| `thinking` | object | — | Extended thinking config |
+| `metadata` | object | — | e.g., `{"user_id": "abc"}` |
+| `service_tier` | string | `"auto"` | `"auto"` or `"standard_only"` |
+
+### Response Structure
+
+```json
+{
+  "id": "msg_...",
+  "type": "message",
+  "role": "assistant",
+  "content": [...content blocks...],
+  "model": "claude-sonnet-4-6",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 50,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}
+```
+
+### Stop Reasons
+
+| Value | Meaning |
+|---|---|
+| `end_turn` | Model completed naturally |
+| `max_tokens` | Hit `max_tokens` limit |
+| `stop_sequence` | Hit a custom stop string |
+| `tool_use` | Model invoked a client tool — **you must continue the loop** |
+| `pause_turn` | Server-side tool loop limit hit (default 10) — **continue, do not discard** |
+
+### Prompt Caching
+
+Mark content blocks as cacheable:
+```json
+{"type": "text", "text": "...", "cache_control": {"type": "ephemeral", "ttl": "5m"}}
+```
+
+- Default TTL: `5m`. Use `1h` for long extended-thinking sessions.
+- **`cache_read_input_tokens` do NOT count toward ITPM rate limits** on most models.
+- Total actual input = `input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens`
+- `input_tokens` in the usage field = only tokens **after** the last cache breakpoint (not total)
+
+---
+
+## 23. Tool Use
+
+### Three Categories of Tools
+
+| Category | Who executes | Example |
+|---|---|---|
+| **Custom (client) tools** | You | Database lookup, file write |
+| **Anthropic-defined client tools** | You (schema from Anthropic) | Computer use, text editor |
+| **Server tools** | Anthropic's servers | Web search, code execution |
+
+### Custom Tool Definition
+
+```json
+{
+  "name": "get_weather",
+  "description": "Get current weather for a location",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "location": {"type": "string", "description": "City and state, e.g. Austin, TX"},
+      "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+    },
+    "required": ["location"]
+  }
+}
+```
+
+Add `"strict": true` inside `input_schema` to enable Structured Outputs (guaranteed schema conformance).
+
+### `tool_choice` Options
+
+```json
+{"type": "auto"}                          // Claude decides (default)
+{"type": "any"}                           // Must call at least one tool
+{"type": "none"}                          // Must not call any tool
+{"type": "tool", "name": "get_weather"}   // Force specific tool
+{"type": "auto", "disable_parallel_tool_use": true}  // Disable parallel calls
+```
+
+> **Gotcha:** Extended thinking only supports `tool_choice: "auto"` or `"none"`. You cannot use `"any"` or `"tool"` with thinking enabled.
+
+### Client Tool Use Workflow
+
+```
+1. Send: tools + messages → Claude
+2. Receive: stop_reason="tool_use", content contains tool_use block
+   {"type": "tool_use", "id": "toolu_...", "name": "get_weather", "input": {"location": "Austin, TX"}}
+3. Execute the tool in your system
+4. Send back: tool_result block as new user message
+   {"type": "tool_result", "tool_use_id": "toolu_...", "content": "72°F, sunny"}
+5. Claude produces final response
+```
+
+### Built-in Server Tools (versioned)
+
+| Tool | Latest Version String |
+|---|---|
+| Web search | `web_search_20260209` |
+| Web fetch | `web_fetch_20260309` |
+| Code execution | `code_execution_20260120` |
+| Bash | `bash_20250124` |
+| Text editor | `text_editor_20250728` |
+| Memory | `memory_20250818` |
+
+Server tools run automatically in a loop (max 10 iterations). Returns `pause_turn` at limit.
+
+### MCP ↔ API Schema Difference
+
+MCP uses `inputSchema` (camelCase); Claude API uses `input_schema` (snake_case). **Rename the field** when converting MCP tool definitions to API format.
+
+---
+
+## 24. Extended Thinking
+
+Extended thinking lets Claude reason through a problem internally before answering. Thinking tokens are **billed as output tokens**.
+
+### When to Use
+
+**Good fit:** complex math, multi-step logic, code debugging, research synthesis, strategic planning.
+
+**Poor fit:** simple queries, latency-sensitive apps, strict cost budgets.
+
+### Configuration
+
+**Adaptive thinking** (recommended for Claude 4.6 models):
+```json
+{
+  "thinking": {"type": "adaptive"},
+  "output_config": {"effort": "high"}
+}
+```
+Effort values: `"low"` | `"medium"` | `"high"` | `"max"`
+
+**Manual thinking** (explicit token budget):
+```json
+{
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 10000,
+    "display": "summarized"
+  }
+}
+```
+
+`display` options:
+- `"summarized"` — returns summary text; full tokens still billed (default on Claude 4+)
+- `"omitted"` — returns empty thinking field + signature; reduces streaming latency
+
+### Rules for `budget_tokens`
+- Must be `>= 1024`
+- Must be `< max_tokens` (exception: interleaved thinking)
+- Changing `budget_tokens` **invalidates the message cache** for that conversation
+
+### Model Support
+
+| Model | Thinking Mode |
+|---|---|
+| Opus 4.6 | Adaptive only (manual `"enabled"` deprecated) |
+| Sonnet 4.6 | Both adaptive and manual; supports interleaved |
+| Opus 4.5, 4.1, 4.0 | Manual; supports interleaved |
+| Sonnet 4.5, 4.0 | Manual; supports interleaved |
+| Haiku 4.5 | Manual only |
+| Sonnet 3.7 | Manual; returns **full** thinking (not summarized) |
+
+### Interleaved Thinking
+
+Claude thinks between tool calls for more sophisticated agentic reasoning.
+- Opus 4.6: automatic with adaptive thinking
+- Sonnet 4.6 + Claude 4 models: requires beta header `interleaved-thinking-2025-05-14`
+
+### Critical Multi-Turn Rule
+
+When returning tool results in a conversation that uses thinking:
+- The thinking block from the tool-use step **must be passed back unmodified**
+- The API verifies the `signature` cryptographically — modification causes an error
+- After the full tool-use cycle completes, you may drop previous thinking blocks
+
+### Context Window Impact
+
+Previous thinking blocks are **automatically stripped** from context calculation by the API in subsequent turns — you are not charged for them again.
+
+---
+
+## 25. Prompt Engineering
+
+### Core Principles
+
+**Be direct and specific**
+- State exactly what you want; Claude won't assume unstated requirements
+- Use numbered steps or bullets when order/completeness matters
+- Explain *why* rules exist — Claude generalizes better from reasoning than bare rules
+
+**Structure with XML tags**
+```xml
+<instructions>Your task is to summarize the document below.</instructions>
+<document>{{document_content}}</document>
+<format>Return a 3-bullet summary.</format>
+```
+
+Common tags: `<instructions>`, `<context>`, `<example>`, `<examples>`, `<input>`, `<document index="N">`, `<thinking>`, `<answer>`
+
+**Few-shot / Multishot prompting**
+- 3–5 examples is the recommended range
+- Wrap examples in `<example>` tags to separate from instructions
+- Make examples diverse (cover edge cases) and representative of real inputs
+
+### Long-Context Best Practices (20k+ tokens)
+
+- Put long documents **at the top** of the prompt, before instructions and query (can improve quality by ~30%)
+- Use structured document wrappers:
+  ```xml
+  <document index="1">
+    <source>quarterly-report.pdf</source>
+    <document_content>{{content}}</document_content>
+  </document>
+  ```
+- Ask Claude to quote relevant sections before answering
+
+### Output Format Control
+
+- Tell Claude what to do: "Write in flowing prose paragraphs" — not "Do not use bullets"
+- Remove markdown from your prompt if you don't want markdown in the output
+- Specify format with XML tags: "Write each section inside `<section>` tags"
+- Opus 4.6 defaults to LaTeX for math — add "format math in plain text" to override
+
+### System Prompts
+
+- Assign a role: "You are a senior Python engineer reviewing a pull request."
+- Set global behavior, formatting preferences, domain restrictions
+- Operators can use system prompts to expand or restrict Claude's defaults within Anthropic policy
+
+### Chain-of-Thought
+
+- For extended thinking disabled: use `<thinking>` / `<answer>` tag pattern
+- Multishot examples with `<thinking>` blocks teach Claude the desired reasoning style
+- Ask for self-verification: "Before finishing, double-check your answer against [criteria]"
+
+> **Gotcha:** Avoid the word "think" on Claude Opus 4.5 with thinking disabled — it can trigger unintended reasoning behavior. Use "consider," "evaluate," or "reason through" instead.
+
+### Prefill Deprecation (Claude 4.6+)
+
+Claude 4.6+ models do not support prefilled assistant turns. Migration paths:
+
+| Old pattern | New approach |
+|---|---|
+| Prefill for output format | Use Structured Outputs or explicit format instructions |
+| Prefill to skip preamble | System prompt: "Respond directly without preamble" |
+| Prefill to continue response | User turn: "Your response was interrupted. Continue from where you left off." |
+
+### Parallel Tool Calling
+
+Include this in your system prompt to maximize Claude 4.6 parallelism:
+```
+If you intend to call multiple tools and there are no dependencies between the
+calls, make all of the independent tool calls in a single response.
+```
+
+---
+
+## 26. Computer Use
+
+Computer use is a **beta feature** that lets Claude see a desktop (via screenshots) and control it with mouse/keyboard actions.
+
+### Beta Headers
+
+| Models | Beta Header |
+|---|---|
+| Opus 4.6, Sonnet 4.6, Opus 4.5 | `computer-use-2025-11-24` |
+| All other supported models | `computer-use-2025-01-24` |
+
+### Tool Versions
+
+| Models | Tool Type String |
+|---|---|
+| Opus 4.6, Sonnet 4.6, Opus 4.5 | `computer_20251124` |
+| All other supported models | `computer_20250124` |
+
+> **Gotcha:** Tool versions are NOT backwards-compatible across model generations. Always use the version matching your model group.
+
+### Tool Definition
+
+```json
+{
+  "type": "computer_20251124",
+  "name": "computer",
+  "display_width_px": 1024,
+  "display_height_px": 768,
+  "display_number": 1
+}
+```
+
+Companion tools typically included:
+- `{"type": "text_editor_20250728", "name": "str_replace_based_edit_tool"}`
+- `{"type": "bash_20250124", "name": "bash"}`
+
+### Available Actions
+
+| Action | Versions | Notes |
+|---|---|---|
+| `screenshot` | All | Capture display |
+| `left_click`, `type`, `key`, `mouse_move` | All | Basic interaction |
+| `scroll`, `right_click`, `double_click`, `drag` | `20250124`+ | Enhanced interaction |
+| `zoom` | `20251124` only | Inspect region at full resolution; requires `"enable_zoom": true` |
+
+### Security Rules
+
+1. Run in a **dedicated VM or container** with minimal privileges
+2. Do not provide sensitive credentials unless necessary
+3. Limit network access to an allowlist
+4. Require human confirmation before consequential actions (payments, form submissions, etc.)
+5. **Prompt injection risk:** Claude can be manipulated by instructions visible on screen — use isolation and Anthropic's classifiers but understand they are not perfect
+6. Computer use is **not eligible for Zero Data Retention (ZDR)**
+
+### Agent Loop Pattern
+
+```python
+while True and iterations < MAX_ITERATIONS:  # Always set a max!
+    response = client.beta.messages.create(...)
+    messages.append({"role": "assistant", "content": response.content})
+    tool_results = []
+    for block in response.content:
+        if block.type == "tool_use":
+            result = execute_tool(block.name, block.input)
+            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+    if not tool_results:
+        break  # Done
+    messages.append({"role": "user", "content": tool_results})
+```
+
+---
+
+## 27. Agentic System Design
+
+### Orchestrator / Subagent Pattern
+
+```
+Orchestrator (Claude)
+├── Delegates task A → Subagent or tool
+├── Delegates task B → Subagent or tool
+└── Integrates results → final output
+```
+
+Claude 4.6+ models natively recognize when to delegate without explicit instructions.
+
+### When to Use Subagents vs. Tools
+
+| Scenario | Use |
+|---|---|
+| Independent parallel workstreams | Subagents |
+| Tasks needing isolated context | Subagents |
+| Simple deterministic actions | Tools |
+| External API calls | Tools |
+| Large file processing | Subagents |
+| Sequential steps with shared state | Single context + tools |
+
+### Long-Horizon State Management
+
+For multi-session or multi-context tasks:
+
+```
+├── tests.json          # Structured test tracker
+├── progress.txt        # Freeform notes on what's done / next steps
+├── init.sh             # Setup script to restore state in a fresh session
+└── git log             # Audit trail of completed work
+```
+
+Start a fresh context window with:
+```
+"Call pwd; review progress.txt, tests.json, and recent git log."
+```
+
+### Anti-Patterns to Avoid
+
+| Anti-pattern | Fix |
+|---|---|
+| Claude hardcodes values to pass tests | Prompt: "Write general solutions, not hardcoded ones" |
+| Claude over-engineers with unused abstractions | Prompt: "Only add complexity that is directly required" |
+| Runaway agent loop (no termination) | Always set `max_turns` or `max_iterations` |
+| Destructive action without confirmation | Prompt: "Confirm before destructive or shared-system operations" |
+| Hallucinating code content | Prompt: "Never speculate about code. Read the file first." |
+
+### Reversibility Heuristic
+
+```
+Freely take:       Local, reversible actions (edit file, run test)
+Confirm before:    Destructive, shared-system, or hard-to-reverse actions
+                   (git push --force, delete DB, send external message)
+```
+
+---
+
+## 28. Rate Limits
+
+### Limit Types
+
+1. **RPM** — Requests per minute
+2. **ITPM** — Input tokens per minute
+3. **OTPM** — Output tokens per minute
+4. **Spend limits** — Monthly maximum cost per org
+
+Rate limits use the **token bucket algorithm** (continuous replenishment, not fixed interval reset).
+
+### Tier System
+
+| Tier | Cumulative Credit Required | Monthly Spend Limit |
+|---|---|---|
+| Tier 1 | $5 | $100 |
+| Tier 2 | $40 | $500 |
+| Tier 3 | $200 | $1,000 |
+| Tier 4 | $400 | $200,000 |
+| Monthly Invoicing | Negotiated | No limit |
+
+### Rate Limits by Tier (Opus/Sonnet 4.x)
+
+| Tier | RPM | ITPM | OTPM |
+|---|---|---|---|
+| Tier 1 | 50 | 30,000 | 8,000 |
+| Tier 2 | 1,000 | 450,000 | 90,000 |
+| Tier 3 | 2,000 | 800,000 | 160,000 |
+| Tier 4 | 4,000 | 2,000,000 | 400,000 |
+
+> **Important:** Opus 4.x limits are shared across Opus 4.6, 4.5, 4.1, and 4.0. Sonnet 4.x limits are shared across Sonnet 4.6, 4.5, and 4.0.
+
+### Cache + ITPM Interaction
+
+On most models, **`cache_read_input_tokens` do not count toward ITPM**. Only:
+- `input_tokens` (tokens after last cache breakpoint)
+- `cache_creation_input_tokens`
+
+...count against the ITPM limit. This can dramatically multiply your effective throughput.
+
+### Handling 429 Errors
+
+```
+HTTP 429 — rate limit exceeded
+```
+
+Response headers to read:
+
+| Header | Description |
+|---|---|
+| `retry-after` | Seconds to wait before retrying |
+| `anthropic-ratelimit-requests-remaining` | RPM remaining |
+| `anthropic-ratelimit-input-tokens-remaining` | ITPM remaining (rounded to nearest 1k) |
+| `anthropic-ratelimit-tokens-reset` | When limit replenishes (RFC 3339) |
+
+> **Gotcha:** If usage ramps up sharply, you can hit 429 even before reaching the stated limit due to **acceleration rate limits**. Ramp up gradually.
+
+### Message Batches API
+
+For large-scale async processing (up to 100,000 requests per batch):
+
+| Tier | RPM | Max in-queue | Max per batch |
+|---|---|---|---|
+| Tier 1 | 50 | 100,000 | 100,000 |
+| Tier 4 | 4,000 | 500,000 | 100,000 |
+
+---
+
+## 29. AI Safety & Constitutional AI
+
+### Constitutional AI (CAI)
+
+Anthropic's training methodology for building safe models without large-scale human labeling of harmful outputs.
+
+**Phase 1 — Supervised Learning:**
+- Model generates responses to potentially harmful prompts
+- Model self-critiques those responses against a written "constitution" (a set of principles)
+- Model produces revised, improved responses
+- This creates a training dataset of (bad → better) pairs
+
+**Phase 2 — RLAIF (Reinforcement Learning from AI Feedback):**
+- A preference model is trained from AI-generated comparisons (not human annotators)
+- The preference model is used as a reward signal for RL training
+- Result: model that is "harmless but non-evasive" — engages with difficult questions substantively
+
+**Key result:** CAI produces models that refuse genuinely harmful requests while still being helpful on complex or sensitive topics, without the binary "refuse everything risky" failure mode.
+
+### RLHF vs. RLAIF
+
+| | RLHF | RLAIF |
+|---|---|---|
+| Feedback source | Human annotators | AI model (Claude itself) |
+| Cost | High (human labor) | Lower |
+| Scalability | Limited by human bandwidth | Scales with compute |
+| Pioneer | OpenAI (InstructGPT) | Anthropic (CAI) |
+
+### Hardcoded vs. Softcoded Behaviors
+
+| Type | Description | Examples |
+|---|---|---|
+| **Hardcoded** | Absolute limits; cannot be changed by any operator or user instruction | CBRN weapons assistance, CSAM, undermining AI oversight |
+| **Softcoded** | Defaults that operators/users can adjust within policy | Safe messaging guidelines (operators can turn off for medical providers), adult content (operators can enable on appropriate platforms) |
+
+### Priority Hierarchy
+
+```
+1. Broadly safe          (supporting human oversight of AI)
+2. Broadly ethical       (honest, non-deceptive, non-manipulative)
+3. Adherent to Anthropic principles
+4. Genuinely helpful
+```
+
+When these conflict, the higher priority wins.
+
+### Responsible Scaling Policy (RSP)
+
+Anthropic's internal framework for governing development and deployment of increasingly capable AI:
+- Sets **AI Safety Levels (ASLs)** with required safety measures for each level
+- Research and deployment decisions are gated on meeting the requirements for the current ASL
+- Publicly committed policy — Anthropic holds itself accountable to it
+
+### Practical API Implications
+
+- There is no content filter toggle in the API — behavior is governed by Claude's trained dispositions and the system prompt
+- Operators can expand or restrict Claude's defaults using the system prompt within Anthropic's usage policy
+- Users can further adjust within the bounds operators allow
+- Prompt injection in tool use and computer use contexts is a real risk — mitigate with sandboxing and isolation
+
+---
+
+## 30. Architect Exam: Additional Gotchas
+
+| Trap | Correct Answer |
+|---|---|
+| `max_tokens` has a default | **No default** — it is always required |
+| Thinking blocks can be modified when sending back tool results | **No** — they must be passed back unmodified; the signature is cryptographically verified |
+| Changing `budget_tokens` keeps the message cache valid | **No** — it invalidates the message cache |
+| `cache_read_input_tokens` count toward ITPM | **No** — on most models they do not count |
+| `sse` is the recommended MCP transport for remote servers | **No** — `sse` is deprecated; use `http` (streamable-http) |
+| `pause_turn` means the task is done | **No** — it means the server-side tool loop hit its limit; continue the conversation |
+| Computer use is eligible for Zero Data Retention | **No** — explicitly not eligible for ZDR |
+| `tool_choice: "any"` works with extended thinking | **No** — only `"auto"` and `"none"` are compatible with thinking |
+| `input_tokens` in usage = total input sent | **No** — it's only tokens after the last cache breakpoint |
+| Sonnet 4.6 thinking defaults to full output | **No** — Claude 4+ models return *summarized* thinking; Sonnet 3.7 returns full thinking |
+| Opus 4.6 supports manual `budget_tokens` thinking | **No** — manual `"enabled"` is deprecated on Opus 4.6; use `"adaptive"` |
+
+---
+
+## 31. Practice Questions — Architect Level
+
+---
+
+**Q16.** A request to Claude Sonnet 4.6 returns `stop_reason: "tool_use"`. What must you do next?
+
+<details>
+<summary>Answer</summary>
+
+Execute the tool(s) specified in the `tool_use` content block(s), then send a new `user` message containing `tool_result` block(s) with the results. The conversation is not complete — `tool_use` always requires a continuation step.
+
+</details>
+
+---
+
+**Q17.** You're building a chatbot and want to cache a large system prompt to save costs. A user session has 10 turns. In which turn does the cache get created, and in which turns is it read?
+
+<details>
+<summary>Answer</summary>
+
+The cache is **created in turn 1** (when the cacheable block is first sent with `cache_control`). It is **read in turns 2–10**, saving input token costs for each subsequent turn. `cache_creation_input_tokens` appear only in turn 1; `cache_read_input_tokens` appear in turns 2–10.
+
+</details>
+
+---
+
+**Q18.** You want Claude Opus 4.6 to use extended thinking with maximum effort. What is the correct API configuration?
+
+<details>
+<summary>Answer</summary>
+
+```json
+{
+  "thinking": {"type": "adaptive"},
+  "output_config": {"effort": "max"}
+}
+```
+
+Manual `"enabled"` thinking is deprecated on Opus 4.6. Use `"adaptive"` with `effort: "max"`.
+
+</details>
+
+---
+
+**Q19.** Your application uses extended thinking and tool use together. After Claude calls a tool, you return the `tool_result`. What do you do with the thinking block from Claude's previous response?
+
+<details>
+<summary>Answer</summary>
+
+**Pass it back unmodified.** The thinking block contains a cryptographic `signature` that the API verifies. If you modify or omit the thinking block when returning tool results, the API returns an error.
+
+</details>
+
+---
+
+**Q20.** What is the ITPM rate limit for Claude Sonnet 4.6 at Tier 2, and how does prompt caching affect your effective throughput?
+
+<details>
+<summary>Answer</summary>
+
+Tier 2 ITPM limit for Sonnet 4.x is **450,000 tokens/minute**. However, `cache_read_input_tokens` do **not** count toward ITPM on most models. If 80% of your input is cached, your effective throughput is approximately **2.25M tokens/minute** (450k / 0.2 = 2.25M total tokens delivered per minute).
+
+</details>
+
+---
+
+**Q21.** An operator wants to enable adult content on their platform using Claude. How do they do this?
+
+<details>
+<summary>Answer</summary>
+
+Via the **system prompt**. The operator writes system prompt instructions that grant permission for adult content within Anthropic's usage policy. There is no API toggle — Claude's behavior is governed by trained dispositions + system prompt context.
+
+</details>
+
+---
+
+**Q22.** You're converting an MCP tool definition to the Claude API format. The MCP definition has an `inputSchema` field. What change is required?
+
+<details>
+<summary>Answer</summary>
+
+Rename `inputSchema` (camelCase) to `input_schema` (snake_case). The Claude API uses snake_case for this field; MCP uses camelCase. No other structural changes are required.
+
+</details>
+
+---
+
+**Q23.** What is the difference between RLHF and RLAIF, and which does Anthropic use in Constitutional AI?
+
+<details>
+<summary>Answer</summary>
+
+- **RLHF:** Human annotators label preferred outputs; used to train a reward model for RL.
+- **RLAIF:** AI generates the preference labels instead of humans; scales better and reduces cost.
+
+Anthropic's Constitutional AI uses **RLAIF** in Phase 2 — the AI itself generates preference comparisons, which are then used as a reward signal for RL training.
+
+</details>
+
+---
+
+**Q24.** A Tier 1 developer sends a burst of 60 requests in one minute to Claude Opus 4.6. What happens?
+
+<details>
+<summary>Answer</summary>
+
+They exceed the **Tier 1 RPM limit of 50 requests/minute**. They will receive HTTP **429** responses for the excess requests. The response includes a `retry-after` header indicating how long to wait. Additionally, a sudden sharp ramp-up may trigger acceleration rate limits even before reaching the stated RPM ceiling.
+
+</details>
+
+---
+
+## Updated Resources
+
+| Resource | URL |
+|---|---|
+| Official Claude Code Docs | <https://docs.anthropic.com/en/docs/claude-code/overview> |
+| Claude API Docs | <https://docs.anthropic.com/en/api/messages> |
+| Models Overview | <https://docs.anthropic.com/en/docs/about-claude/models/overview> |
+| Prompt Engineering Guide | <https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/overview> |
+| Tool Use Guide | <https://docs.anthropic.com/en/docs/build-with-claude/tool-use/overview> |
+| Extended Thinking | <https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking> |
+| Rate Limits | <https://docs.anthropic.com/en/api/rate-limits> |
+| Anthropic Academy | <https://anthropic.skilljar.com> |
+| Constitutional AI Paper | <https://www.anthropic.com/research/constitutional-ai-harmlessness-from-ai-feedback> |
+| Settings Schema | `"$schema": "https://json.schemastore.org/claude-code-settings.json"` |
+
+---
+
+*Overall study priority: **Hooks + Settings + MCP + Subagents** (Claude Code sections) and **Tool Use + Extended Thinking + Rate Limits + Prompt Engineering** (Architect sections). The [Gotchas section](#19-common-exam-traps--gotchas) and [Architect Gotchas](#30-architect-exam-additional-gotchas) are the highest-density review material.*
